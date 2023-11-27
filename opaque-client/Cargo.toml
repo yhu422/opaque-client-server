@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 opaque-ke = "2"
 rand = "0.8.5"
+aes-gcm = "0.10.3"

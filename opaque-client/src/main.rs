@@ -1,7 +1,9 @@
 use std::net::TcpStream;
-use std::io::Write;
+use std::io::{Write,Read};
 use rand::rngs::OsRng;
 use rand::{Rng, RngCore, thread_rng};
+use aes_gcm::{KeyInit, Aes256Gcm, Key, Nonce};
+use aes_gcm::aead::Aead;
 use opaque_ke::{
     ClientLogin, ClientLoginFinishParameters, ClientRegistration,
     ClientRegistrationFinishParameters, CipherSuite, CredentialFinalization, CredentialRequest,
@@ -17,9 +19,34 @@ impl CipherSuite for DefaultCipherSuite {
     type Ksf = opaque_ke::ksf::Identity;
 }
 
+// Given a key and plaintext, produce an AEAD ciphertext along with a nonce
+fn encrypt(key: &[u8], plaintext: &[u8]) -> Vec<u8> {
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from_slice(&key[..32]));
+
+    let mut rng = OsRng;
+    let mut nonce_bytes = [0u8; 12];
+    rng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    let ciphertext = cipher.encrypt(nonce, plaintext.as_ref()).unwrap();
+    [nonce_bytes.to_vec(), ciphertext].concat()
+}
+
+// Decrypt using a key and a ciphertext (nonce included) to recover the original
+// plaintext
+fn decrypt(key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
+    let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from_slice(&key[..32]));
+    cipher
+        .decrypt(
+            Nonce::from_slice(&ciphertext[..12]),
+            ciphertext[12..].as_ref(),
+        )
+        .unwrap()
+}
+
 fn register(
     mut stream: TcpStream,
-    user_id: usize,
+    username: String,
     password: String,
     secret_message: String,
 ) {
@@ -28,14 +55,120 @@ fn register(
         ClientRegistration::<DefaultCipherSuite>::start(&mut client_rng, password.as_bytes())
             .unwrap();
     let registration_request_bytes = client_registration_start_result.message.serialize();
-    stream.write_all(&[0]);
-    stream.write_all(&registration_request_bytes);
+    println!("Registration Request Bytes: {:?}", registration_request_bytes);
+    let mut bytes_vector : Vec<u8> = vec![0]; // Represents this is a register operation
+    let mut length = registration_request_bytes.len();
+    println!("{}", length);
+    let mut length_vector : Vec<u8> = Vec::with_capacity(4);
+    for i in (0..4).rev() {
+        // Extract individual bytes using bitwise operations
+        let byte = ((length >> (i * 8)) & 0xFF) as u8;
+        length_vector.push(byte);
+    }
+    println!("{:?}", length_vector);
+    bytes_vector.extend(&length_vector);
+    bytes_vector.extend(&registration_request_bytes);
+    let username_bytes = username.as_bytes();
+    println!("Username Bytes: {:?}", username_bytes);
+    let username_length = username_bytes.len();
+    let mut length_vector2 : Vec<u8> = Vec::with_capacity(4);
+    for i in (0..4).rev() {
+        // Extract individual bytes using bitwise operations
+        let byte = ((username_length >> (i * 8)) & 0xFF) as u8;
+        length_vector2.push(byte);
+    }
+    bytes_vector.extend(&length_vector2);
+    bytes_vector.extend(username_bytes);
+    println!("{:?}", bytes_vector);
+    stream.write_all(&bytes_vector);
     stream.flush();
+    let mut length_buffer: [u8; 4] = [0,0,0,0];
+    stream.read_exact(&mut length_buffer);
+    let mut length: usize = 0;
+    for byte in length_buffer {
+        length = (length << 8) | byte as usize;
+    }
+    let mut registration_response_buffer = vec![0;length];
+    stream.read_exact(&mut registration_response_buffer);
+    let client_finish_registration_result = client_registration_start_result
+    .state
+    .finish(
+        &mut client_rng,
+        password.as_bytes(),
+        RegistrationResponse::deserialize(&registration_response_buffer).unwrap(),
+        ClientRegistrationFinishParameters::default(),
+    )
+    .unwrap();
+    let message_bytes = client_finish_registration_result.message.serialize();
+    let registration_result_length = message_bytes.len();
+    let mut registration_result_length_vector : Vec<u8> = Vec::with_capacity(4);
+    for i in (0..4).rev() {
+        // Extract individual bytes using bitwise operations
+        let byte = ((registration_result_length >> (i * 8)) & 0xFF) as u8;
+        registration_result_length_vector.push(byte);
+    }
+    let ciphertext = encrypt(
+        &client_finish_registration_result.export_key,
+        secret_message.as_bytes(),
+    );
+    let ciphertext_length = ciphertext.len();
+    let mut ciphertext_length_vector : Vec<u8> = Vec::with_capacity(4);
+    for i in (0..4).rev() {
+        // Extract individual bytes using bitwise operations
+        let byte = ((ciphertext_length >> (i * 8)) & 0xFF) as u8;
+        ciphertext_length_vector.push(byte);
+    }
+    ciphertext_length_vector.extend(&ciphertext);
+    ciphertext_length_vector.extend(&registration_result_length_vector);
+    ciphertext_length_vector.extend(&message_bytes);
+    stream.write_all(&ciphertext_length_vector);
 }
+
+fn login(mut stream: TcpStream,
+    username: String,
+    password: String,) {
+        let mut client_rng = OsRng;
+        let client_login_start_result =
+        ClientLogin::<DefaultCipherSuite>::start(&mut client_rng, password.as_bytes()).unwrap();
+        let credential_request_bytes = client_login_start_result.message.serialize();
+
+        println!("Login Request Bytes: {:?}", credential_request_bytes);
+        let mut bytes_vector : Vec<u8> = vec![1]; // Represents this is a login operation
+        let mut length = credential_request_bytes.len();
+        println!("{}", length);
+        let mut length_vector : Vec<u8> = Vec::with_capacity(4);
+        for i in (0..4).rev() {
+            // Extract individual bytes using bitwise operations
+            let byte = ((length >> (i * 8)) & 0xFF) as u8;
+            length_vector.push(byte);
+        }
+        println!("{:?}", length_vector);
+        bytes_vector.extend(&length_vector);
+        bytes_vector.extend(&credential_request_bytes);
+        let username_bytes = username.as_bytes();
+        println!("Username Bytes: {:?}", username_bytes);
+        let username_length = username_bytes.len();
+        let mut length_vector2 : Vec<u8> = Vec::with_capacity(4);
+        for i in (0..4).rev() {
+            // Extract individual bytes using bitwise operations
+            let byte = ((username_length >> (i * 8)) & 0xFF) as u8;
+            length_vector2.push(byte);
+        }
+        bytes_vector.extend(&length_vector2);
+        bytes_vector.extend(username_bytes);
+        println!("{:?}", bytes_vector);
+        stream.write_all(&bytes_vector);
+        stream.flush();
+
+    }
+
 fn main() {
     if let Ok(mut stream) = TcpStream::connect("127.0.0.1:7878") {
+        let mut register_stream = stream.try_clone().unwrap();
+        let mut login_stream = stream.try_clone().unwrap();
         println!("Connected to the server!");
-        register(stream, 1, "123456".to_string(), "hello world".to_string());
+        // register(register_stream, "leo".to_string(), "123456".to_string(), "hello world".to_string());
+        login(login_stream, "leo".to_string(), "123456".to_string());
     } else {
         println!("Couldn't connect to server...");
     }

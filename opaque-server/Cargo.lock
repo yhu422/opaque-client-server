@@ -241,6 +241,7 @@ dependencies = [
 name = "opaque-server"
 version = "0.1.0"
 dependencies = [
+ "generic-array",
  "opaque-ke",
  "rand",
 ]
