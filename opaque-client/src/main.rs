@@ -1,4 +1,4 @@
-use std::net::TcpStream;
+use std::net::{TcpStream, Shutdown};
 use std::io::{Write,Read};
 use rand::rngs::OsRng;
 use rand::{Rng, RngCore, thread_rng};
@@ -243,6 +243,10 @@ fn login(mut stream: TcpStream,
         String::from_utf8(plaintext).map_err(|_| String::from("UTF8 error"))
     }
 
+fn close_connection(mut stream: TcpStream) {
+    stream.write_all(&vec![2]);
+}
+
 fn main() {
     let mut length = 64;
     println!("{:?}", u32_to_bytes(length));
@@ -250,9 +254,12 @@ fn main() {
     if let Ok(mut stream) = TcpStream::connect("127.0.0.1:7878") {
         let mut register_stream = stream.try_clone().unwrap();
         let mut login_stream = stream.try_clone().unwrap();
+        let mut shutdown_stream = stream.try_clone().unwrap();
         println!("Connected to the server!");
-        //register(register_stream, "leo".to_string(), "123456".to_string(), "hello world".to_string());
+        register(register_stream, "leo".to_string(), "123456".to_string(), "hello world".to_string());
         println!("{}", login(login_stream, "leo".to_string(), "123456".to_string()).unwrap());
+        close_connection(shutdown_stream);
+        stream.shutdown(Shutdown::Both);
     } else {
         println!("Couldn't connect to server...");
     }

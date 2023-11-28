@@ -9,6 +9,7 @@ use rand::{Rng, RngCore, thread_rng};
 use aes_gcm::{KeyInit, Aes256Gcm, Key, Nonce};
 use aes_gcm::aead::Aead;
 use generic_array::GenericArray;
+use threadpool::ThreadPool;
 use opaque_ke::{ CipherSuite,
     CredentialFinalization, CredentialRequest,
     CredentialResponse, RegistrationRequest, RegistrationRequestLen, RegistrationResponseLen, RegistrationUpload, ServerLogin,
@@ -83,6 +84,7 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
     let mut type_buffer: [u8; 1] = [0];
     let mut length_buffer: [u8; 4] = [0,0,0,0];
     let mut rng = OsRng;
+    loop {
     stream.read_exact(&mut type_buffer);
     if type_buffer[0] == 0 {
         stream.read_exact(&mut length_buffer);
@@ -101,8 +103,8 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
         }
         let mut username_buffer = vec![0;length];
         stream.read_exact(&mut username_buffer);
-        println!("Registration Request Bytes: {:?}", registration_request_buffer);
-        println!("Username Bytes: {:?}", username_buffer);
+        //println!("Registration Request Bytes: {:?}", registration_request_buffer);
+        //println!("Username Bytes: {:?}", username_buffer);
         let server_registration_start_result = ServerRegistration::<DefaultCipherSuite>::start(
             server_setup,
             RegistrationRequest::deserialize(&registration_request_buffer).unwrap(),
@@ -111,40 +113,40 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
 
         //Prepare sending registration response
         let registration_response_bytes = server_registration_start_result.message.serialize();
-        println!("Registration Response Bytes: {:?}", registration_response_bytes);
+        //println!("Registration Response Bytes: {:?}", registration_response_bytes);
         length = registration_response_bytes.len();
-        println!("Registration Response Length: {}", length);
+        //println!("Registration Response Length: {}", length);
         let mut length_vector : Vec<u8> = Vec::with_capacity(4);
         for i in (0..4).rev() {
             // Extract individual bytes using bitwise operations
             let byte = ((length >> (i * 8)) & 0xFF) as u8;
             length_vector.push(byte);
         }
-        println!("Registration Response Length Bytes: {:?}", length_vector);
+        //println!("Registration Response Length Bytes: {:?}", length_vector);
         length_vector.extend(registration_response_bytes);
         stream.write_all(&length_vector); 
         stream.flush();
         // In a real setting, a signature over the registration response bytes and a Challenge will also be sent. Omitted for simplicity
 
         stream.read_exact(&mut length_buffer);
-        println!("Length Buffer: {:?}", length_buffer);
+        //println!("Length Buffer: {:?}", length_buffer);
         length = 0;
         for byte in length_buffer {
             length = (length << 8) | byte as usize;
         }
-        println!("Ciphertext Buffer Length: {}", length);
+        //println!("Ciphertext Buffer Length: {}", length);
         let mut ciphertext_buffer = vec![0;length];
         stream.read_exact(&mut ciphertext_buffer);
-        println!("CipherText: {:?}", ciphertext_buffer);
+        //println!("CipherText: {:?}", ciphertext_buffer);
         stream.read_exact(&mut length_buffer);
         length = 0;
         for byte in length_buffer {
             length = (length << 8) | byte as usize;
         }
-        println!("Registration Result Buffer Length: {}", length);
+        //println!("Registration Result Buffer Length: {}", length);
         let mut registration_result_buffer = vec![0;length];
         stream.read_exact(&mut registration_result_buffer);
-        println!("Registration Result Buffer: {:?}", registration_result_buffer);
+        //println!("Registration Result Buffer: {:?}", registration_result_buffer);
         let password_file = ServerRegistration::finish(
             RegistrationUpload::<DefaultCipherSuite>::deserialize(&registration_result_buffer).unwrap(),
         );
@@ -156,7 +158,8 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
         };
         let mut m = registered_lockers.lock().unwrap();
         m.insert(String::from_utf8(username_buffer).unwrap(), l);
-    }else {
+        println!("Registration Complete")
+    }else if type_buffer[0] == 1{
         stream.read_exact(&mut length_buffer);
         let mut length: usize = 0;
 
@@ -228,18 +231,26 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
         }
         length_vector2.extend(encrypted_locker_contents);
         stream.write_all(&length_vector2);
+    }else {
+        break;
+    }
     }
 }
+
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
     let registered_lockers = Arc::new(Mutex::new(HashMap::new()));
     let mut rng = OsRng;
     let server_setup = ServerSetup::<DefaultCipherSuite>::new(&mut rng);
+    let n_workers = 10;
+    let pool = ThreadPool::new(n_workers);
     for stream in listener.incoming() {
         let stream = stream.unwrap();
-        handle_connection(&server_setup, stream, &registered_lockers);
-        // let getter = registered_lockers.lock().unwrap();
-        // println!("{:?}", getter.get("leo").unwrap().guess_count);
+        let server_setup_clone = server_setup.clone();
+        let registered_lockers_clone = registered_lockers.clone();
+        pool.execute(move || {
+            handle_connection(&server_setup_clone, stream, &registered_lockers_clone)
+        });
     }
 }
