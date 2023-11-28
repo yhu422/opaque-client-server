@@ -19,6 +19,30 @@ impl CipherSuite for DefaultCipherSuite {
     type Ksf = opaque_ke::ksf::Identity;
 }
 
+//Convert a 4 byte vector to an unsigned int
+fn bytes_to_u32(length_vector: Vec<u8>) -> u32 {
+    let mut length: u32 = 0;
+    for byte in length_vector {
+        length = (length << 8) | byte as u32;
+    }
+    length
+}
+
+//Convert an unsigned int to a 4 byte vector
+fn u32_to_bytes(length: u32) -> Vec<u8> {
+    let mut length_vector : Vec<u8> = Vec::with_capacity(4);
+    for i in (0..4).rev() {
+        // Extract individual bytes using bitwise operations
+        let byte = ((length >> (i * 8)) & 0xFF) as u8;
+        length_vector.push(byte);
+    }
+    length_vector
+}
+//Read the next 4 bytes as length, then constructing a new vector of that length and read that many bytes from stream.
+fn read_from_stream(mut stream: TcpStream) {
+
+}
+
 // Given a key and plaintext, produce an AEAD ciphertext along with a nonce
 fn encrypt(key: &[u8], plaintext: &[u8]) -> Vec<u8> {
     let cipher = Aes256Gcm::new(&Key::<Aes256Gcm>::from_slice(&key[..32]));
@@ -50,6 +74,7 @@ fn register(
     password: String,
     secret_message: String,
 ) {
+    println!("Password Bytes: {:?}", password.as_bytes());
     let mut client_rng = OsRng;
     let client_registration_start_result =
         ClientRegistration::<DefaultCipherSuite>::start(&mut client_rng, password.as_bytes())
@@ -126,7 +151,8 @@ fn register(
 
 fn login(mut stream: TcpStream,
     username: String,
-    password: String,) {
+    password: String,) -> Result<String, String>{
+        println!("Password Bytes: {:?}", password.as_bytes());
         let mut client_rng = OsRng;
         let client_login_start_result =
         ClientLogin::<DefaultCipherSuite>::start(&mut client_rng, password.as_bytes()).unwrap();
@@ -160,15 +186,73 @@ fn login(mut stream: TcpStream,
         stream.write_all(&bytes_vector);
         stream.flush();
 
+        //Read Login Response
+        let mut length_buffer: [u8; 4] = [0,0,0,0];
+        stream.read_exact(&mut length_buffer);
+        let mut length: usize = 0;
+        for byte in length_buffer {
+            length = (length << 8) | byte as usize;
+        }
+        let mut credential_response_buffer = vec![0;length];
+        stream.read_exact(&mut credential_response_buffer);
+        println!("Crdential Response Buffer: {:?}", credential_response_buffer);
+        let result = client_login_start_result.state.finish(
+            password.as_bytes(),
+            CredentialResponse::deserialize(&credential_response_buffer).unwrap(),
+            ClientLoginFinishParameters::default(),
+        );
+
+        if result.is_err() {
+            // Client-detected login failure
+            println!("Incorrect Password!");
+            return Err(String::from("Incorrect password, please try again."));
+        }
+
+        let client_login_finish_result = result.unwrap();
+        let credential_finalization_bytes = client_login_finish_result.message.serialize();
+        let credential_finalization_length = credential_finalization_bytes.len();
+        let mut credential_finalization_length_vector : Vec<u8> = Vec::with_capacity(4);
+        for i in (0..4).rev() {
+            // Extract individual bytes using bitwise operations
+            let byte = ((credential_finalization_length >> (i * 8)) & 0xFF) as u8;
+            credential_finalization_length_vector.push(byte);
+        }
+        println!("Credential Finalization Bytes: {:?}", credential_finalization_bytes);
+        println!("Credential Finalization Length: {}", credential_finalization_length);
+        println!("Credential Finalization Length Byte: {:?}", credential_finalization_length_vector);
+        credential_finalization_length_vector.extend(credential_finalization_bytes);
+        stream.write_all(&credential_finalization_length_vector);
+        stream.flush();
+        stream.read_exact(&mut length_buffer);
+        let mut length: usize = 0;
+        for byte in length_buffer {
+            length = (length << 8) | byte as usize;
+        }
+        println!("Encrypted Ciphertext Length Bytes: {:?}", length_buffer);
+        println!("Encrypted Ciphertext Length: {}", length);
+        let mut encrypted_ciphertext = vec![0;length];
+        stream.read_exact(&mut encrypted_ciphertext);
+        println!("Encrypted Ciphertext: {:?}", encrypted_ciphertext);
+        let ciphertext = decrypt(&client_login_finish_result.session_key,
+            &encrypted_ciphertext,);
+        println!("Ciphertext: {:?}", ciphertext);
+        let plaintext = decrypt(
+            &client_login_finish_result.export_key,
+            &ciphertext,
+        );
+        String::from_utf8(plaintext).map_err(|_| String::from("UTF8 error"))
     }
 
 fn main() {
+    let mut length = 64;
+    println!("{:?}", u32_to_bytes(length));
+    println!("{:?}", bytes_to_u32(u32_to_bytes(length)));
     if let Ok(mut stream) = TcpStream::connect("127.0.0.1:7878") {
         let mut register_stream = stream.try_clone().unwrap();
         let mut login_stream = stream.try_clone().unwrap();
         println!("Connected to the server!");
-        // register(register_stream, "leo".to_string(), "123456".to_string(), "hello world".to_string());
-        login(login_stream, "leo".to_string(), "123456".to_string());
+        //register(register_stream, "leo".to_string(), "123456".to_string(), "hello world".to_string());
+        println!("{}", login(login_stream, "leo".to_string(), "123456".to_string()).unwrap());
     } else {
         println!("Couldn't connect to server...");
     }
