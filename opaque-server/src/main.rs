@@ -2,7 +2,8 @@ use std::{
     io::{prelude::*, Write, Read},
     net::{TcpListener, TcpStream},
     sync::{Arc, Mutex},
-    collections::HashMap
+    collections::HashMap,
+    time::Instant
 };
 use rand::rngs::OsRng;
 use rand::{Rng, RngCore, thread_rng};
@@ -87,6 +88,9 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
     loop {
     stream.read_exact(&mut type_buffer);
     if type_buffer[0] == 0 {
+        let mut start_time = Instant::now();
+
+
         stream.read_exact(&mut length_buffer);
         let mut length: usize = 0;
 
@@ -158,8 +162,14 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
         };
         let mut m = registered_lockers.lock().unwrap();
         m.insert(String::from_utf8(username_buffer).unwrap(), l);
+
+        let mut end_time = Instant::now();
+        let mut elapsed = end_time.duration_since(start_time);
+        println!("Register Takes: {:?}", elapsed);
+
         println!("Registration Complete")
     }else if type_buffer[0] == 1{
+        let mut start_time = Instant::now();
         stream.read_exact(&mut length_buffer);
         let mut length: usize = 0;
 
@@ -176,12 +186,12 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
         }
         let mut username_buffer = vec![0;length];
         stream.read_exact(&mut username_buffer);
-        println!("Login Request Bytes: {:?}", credential_request_buffer);
-        println!("Username Bytes: {:?}", username_buffer);        
+        //println!("Login Request Bytes: {:?}", credential_request_buffer);
+        //println!("Username Bytes: {:?}", username_buffer);        
         let mut m = registered_lockers.lock().unwrap();
         let locker = m.get(&String::from_utf8(username_buffer.clone()).unwrap()).unwrap();
         let password_file = ServerRegistration::<DefaultCipherSuite>::deserialize(&locker.password_file).unwrap();
-        println!("{:?}", &locker.password_file);
+        //println!("{:?}", &locker.password_file);
         let server_login_start_result = ServerLogin::start(
             &mut rng,
             server_setup,
@@ -192,23 +202,23 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
         )
         .unwrap();
         let credential_response_bytes = server_login_start_result.message.serialize();
-        println!("Credential Response Bytes: {:?}", credential_response_bytes);
+        //println!("Credential Response Bytes: {:?}", credential_response_bytes);
         length = credential_response_bytes.len();
-        println!("Credential Response Length: {}", length);
+        //println!("Credential Response Length: {}", length);
         let mut length_vector : Vec<u8> = Vec::with_capacity(4);
         for i in (0..4).rev() {
             // Extract individual bytes using bitwise operations
             let byte = ((length >> (i * 8)) & 0xFF) as u8;
             length_vector.push(byte);
         }
-        println!("Credential Response Length Bytes: {:?}", length_vector);
+        //println!("Credential Response Length Bytes: {:?}", length_vector);
         length_vector.extend(credential_response_bytes);
         stream.write_all(&length_vector); 
         stream.flush();
 
         //Read Credential Finalization
         stream.read_exact(&mut length_buffer);
-        println!("Length Buffer: {:?}", length_buffer);
+        //println!("Length Buffer: {:?}", length_buffer);
         length = 0;
         for byte in length_buffer {
             length = (length << 8) | byte as usize;
@@ -221,7 +231,7 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
         .unwrap();
         let encrypted_locker_contents =
         encrypt(&server_login_finish_result.session_key, &locker.contents);
-        println!("Encrypted Locker Contents: {:?}", encrypted_locker_contents);
+        //println!("Encrypted Locker Contents: {:?}", encrypted_locker_contents);
         let mut length_vector2 : Vec<u8> = Vec::with_capacity(4);
         length = encrypted_locker_contents.len();
         for i in (0..4).rev() {
@@ -231,6 +241,10 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
         }
         length_vector2.extend(encrypted_locker_contents);
         stream.write_all(&length_vector2);
+        let mut end_time = Instant::now();
+        let mut elapsed = end_time.duration_since(start_time);
+        println!("Login Takes: {:?}", elapsed);
+        println!("Login Completed");
     }else {
         break;
     }
