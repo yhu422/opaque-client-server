@@ -78,7 +78,7 @@ fn decrypt(key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
         .unwrap()
 }
 
-fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
+fn handle_connection(server_setup: &Arc<Mutex<ServerSetup<DefaultCipherSuite>>>,
                      mut stream: TcpStream,
                      mut registered_lockers: &Arc<Mutex<HashMap<String, Locker>>>
     ){
@@ -110,7 +110,7 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
         //println!("Registration Request Bytes: {:?}", registration_request_buffer);
         //println!("Username Bytes: {:?}", username_buffer);
         let server_registration_start_result = ServerRegistration::<DefaultCipherSuite>::start(
-            server_setup,
+            &server_setup.lock().unwrap(),
             RegistrationRequest::deserialize(&registration_request_buffer).unwrap(),
             &username_buffer
         ).unwrap();
@@ -194,7 +194,7 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
         //println!("{:?}", &locker.password_file);
         let server_login_start_result = ServerLogin::start(
             &mut rng,
-            server_setup,
+            &server_setup.lock().unwrap(),
             Some(password_file),
             CredentialRequest::deserialize(&credential_request_buffer).unwrap(),
             &username_buffer,
@@ -241,9 +241,9 @@ fn handle_connection(server_setup: &ServerSetup<DefaultCipherSuite>,
         }
         length_vector2.extend(encrypted_locker_contents);
         stream.write_all(&length_vector2);
-        let mut end_time = Instant::now();
-        let mut elapsed = end_time.duration_since(start_time);
-        println!("Login Takes: {:?}", elapsed);
+        // let mut end_time = Instant::now();
+        // let mut elapsed = end_time.duration_since(start_time);
+        // println!("Login Takes: {:?}", elapsed);
         println!("Login Completed");
     }else {
         break;
@@ -256,7 +256,7 @@ fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
     let registered_lockers = Arc::new(Mutex::new(HashMap::new()));
     let mut rng = OsRng;
-    let server_setup = ServerSetup::<DefaultCipherSuite>::new(&mut rng);
+    let server_setup = Arc::new(Mutex::new(ServerSetup::<DefaultCipherSuite>::new(&mut rng)));
     let n_workers = 10;
     let pool = ThreadPool::new(n_workers);
     for stream in listener.incoming() {

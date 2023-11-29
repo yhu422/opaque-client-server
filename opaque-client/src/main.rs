@@ -269,7 +269,7 @@ fn main() {
     //println!("{:?}", bytes_to_u32(u32_to_bytes(length)));
     let mut rng = OsRng;
 
-    let num_strings = 200; // Number of random strings to generate
+    let num_strings = 500; // Number of random strings to generate
     let string_length = 20; // Length of each random string
     let n_workers = 10;
     let pool = ThreadPool::new(n_workers);
