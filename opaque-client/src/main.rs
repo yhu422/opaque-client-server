@@ -3,12 +3,13 @@ use std::io::{Write,Read};
 use std::time::Instant;
 use rand::rngs::OsRng;
 use rand::{Rng, RngCore, thread_rng};
+use threadpool::ThreadPool;
 use aes_gcm::{KeyInit, Aes256Gcm, Key, Nonce};
 use aes_gcm::aead::Aead;
 use opaque_ke::{
     ClientLogin, ClientLoginFinishParameters, ClientRegistration,
     ClientRegistrationFinishParameters, CipherSuite, CredentialFinalization, CredentialRequest,
-    CredentialResponse, RegistrationRequest, RegistrationResponse, RegistrationUpload
+    CredentialResponse, RegistrationRequest, RegistrationResponse, RegistrationUpload, ServerSetup
 };
 
 struct DefaultCipherSuite;
@@ -248,28 +249,107 @@ fn close_connection(mut stream: TcpStream) {
     stream.write_all(&vec![2]);
 }
 
+fn generate_random_string(length: usize) -> String {
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let mut rng = thread_rng();
+
+    let random_string: String = (0..length)
+        .map(|_| {
+            let idx = rng.gen_range(0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect();
+
+    random_string
+}
+
 fn main() {
-    let mut length = 64;
+    //let mut length = 64;
     //println!("{:?}", u32_to_bytes(length));
     //println!("{:?}", bytes_to_u32(u32_to_bytes(length)));
-    if let Ok(mut stream) = TcpStream::connect("127.0.0.1:7878") {
-        let mut register_stream = stream.try_clone().unwrap();
-        let mut login_stream = stream.try_clone().unwrap();
-        let mut shutdown_stream = stream.try_clone().unwrap();
-        println!("Connected to the server!");
-        let mut start_time = Instant::now();
-        register(register_stream, "leo".to_string(), "123456".to_string(), "hello world".to_string());
-        let mut end_time = Instant::now();
-        let mut elapsed = end_time.duration_since(start_time);
-        println!("Register Takes: {:?}", elapsed);
-        start_time = Instant::now();
-        println!("{}", login(login_stream, "leo".to_string(), "123456".to_string()).unwrap());
-        end_time = Instant::now();
-        elapsed = end_time.duration_since(start_time);
-        println!("Login Takes: {:?}", elapsed);
-        close_connection(shutdown_stream);
-        stream.shutdown(Shutdown::Both);
-    } else {
-        println!("Couldn't connect to server...");
+    let mut rng = OsRng;
+
+    let num_strings = 200; // Number of random strings to generate
+    let string_length = 20; // Length of each random string
+    let n_workers = 10;
+    let pool = ThreadPool::new(n_workers);
+    // Generate an array of random strings
+    let mut random_passwords: Vec<String> = Vec::with_capacity(num_strings);
+    let mut random_usernames: Vec<String> = Vec::with_capacity(num_strings);
+    let mut random_keys: Vec<u64> = Vec::with_capacity(num_strings);
+    for _ in 0..num_strings {
+        random_passwords.push(generate_random_string(string_length));
+        random_usernames.push(generate_random_string(string_length));
+        random_keys.push(rng.gen::<u64>());
     }
+    let mut start_time = Instant::now();
+    for task_id in 0..num_strings {
+        // Spawn a new thread for each task
+        let username = random_usernames[task_id].to_string();
+        let password = random_passwords[task_id].clone();
+        let key = random_keys[task_id].to_string();
+        pool.execute(move || {
+            if let Ok(stream) = TcpStream::connect("127.0.0.1:7878") {
+                let  register_stream = stream.try_clone().unwrap();
+                let  shutdown_stream = stream.try_clone().unwrap();
+                println!("Connected to the server!");
+                register(register_stream, username, password, key);
+                close_connection(shutdown_stream);
+                stream.shutdown(Shutdown::Both).unwrap();
+            } else {
+                println!("Couldn't connect to server...");
+            }
+        });
+    }
+    pool.join();
+    let mut end_time = Instant::now();
+    let mut elapsed = end_time.duration_since(start_time);
+    println!("Elapsed time for running {} register operations on {} worker threads: {:?}",num_strings, n_workers, elapsed);
+    
+    start_time = Instant::now();
+    for task_id in 0..num_strings {
+        // Spawn a new thread for each task
+        let username = random_usernames[task_id].to_string();
+        let password = random_passwords[task_id].clone();
+        let key = random_keys[task_id].to_string();
+        pool.execute(move || {
+            if let Ok(stream) = TcpStream::connect("127.0.0.1:7878") {
+                let  login_stream = stream.try_clone().unwrap();
+                let  shutdown_stream = stream.try_clone().unwrap();
+                // println!("Connected to the server!");
+                // println!("Task {} Retrieved Key: {}",task_id, login(login_stream, username, password).unwrap());
+                login(login_stream, username, password).unwrap();
+                // println!("Task {} Actual Key: {}",task_id, key);
+                close_connection(shutdown_stream);
+                //stream.shutdown(Shutdown::Both).unwrap();
+            } else {
+                println!("Couldn't connect to server...");
+            }
+        });
+    }
+    pool.join();
+    end_time = Instant::now();
+    elapsed = end_time.duration_since(start_time);
+    println!("Elapsed time for running {} Login operations on {} worker threads: {:?}",num_strings, n_workers, elapsed);
+
+    // if let Ok(mut stream) = TcpStream::connect("127.0.0.1:7878") {
+    //     let mut register_stream = stream.try_clone().unwrap();
+    //     let mut login_stream = stream.try_clone().unwrap();
+    //     let mut shutdown_stream = stream.try_clone().unwrap();
+    //     println!("Connected to the server!");
+    //     let mut start_time = Instant::now();
+    //     register(register_stream, "leo".to_string(), "123456".to_string(), "hello world".to_string());
+    //     let mut end_time = Instant::now();
+    //     let mut elapsed = end_time.duration_since(start_time);
+    //     println!("Register Takes: {:?}", elapsed);
+    //     start_time = Instant::now();
+    //     println!("{}", login(login_stream, "leo".to_string(), "123456".to_string()).unwrap());
+    //     end_time = Instant::now();
+    //     elapsed = end_time.duration_since(start_time);
+    //     println!("Login Takes: {:?}", elapsed);
+    //     close_connection(shutdown_stream);
+    //     stream.shutdown(Shutdown::Both);
+    // } else {
+    //     println!("Couldn't connect to server...");
+    // }
 }
