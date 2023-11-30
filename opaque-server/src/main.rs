@@ -34,7 +34,7 @@ struct Locker {
 
 
 //Convert a 4 byte vector to an unsigned int
-fn bytes_to_u32(length_vector: &[u8]) -> u32 {
+fn bytes_to_u32(length_vector: &Vec<u8>) -> u32 {
     let mut length: u32 = 0;
     for byte in length_vector {
         length = (length << 8) | *byte as u32;
@@ -51,6 +51,24 @@ fn u32_to_bytes(length: u32) -> Vec<u8> {
         length_vector.push(byte);
     }
     length_vector
+}
+//Read the next 4 bytes as length, then constructing a new vector of that length and read that many bytes from stream.
+fn read_from_stream(mut stream: &TcpStream) -> Vec<u8> {
+    let mut length_buffer: [u8; 4] = [0,0,0,0];
+    stream.read_exact(&mut length_buffer).unwrap();
+    let length = bytes_to_u32(&mut length_buffer.to_vec());
+    let mut byte_vector: Vec<u8> = vec![0;length.try_into().unwrap()];
+    stream.read_exact(&mut byte_vector).unwrap();
+    byte_vector
+}
+
+//Write 4 bytes representing the length of byte_vector to the stream, then write byte_vector to the stream
+fn write_to_stream(mut stream: &TcpStream, byte_vector: &Vec<u8>) {
+    let length = byte_vector.len();
+    let mut length_vector = u32_to_bytes(length.try_into().unwrap());
+    length_vector.extend(byte_vector);
+    stream.write_all(&length_vector).unwrap();
+    stream.flush().unwrap();
 }
 
 // Given a key and plaintext, produce an AEAD ciphertext along with a nonce
@@ -80,33 +98,17 @@ fn decrypt(key: &[u8], ciphertext: &[u8]) -> Vec<u8> {
 
 fn handle_connection(server_setup: &Arc<Mutex<ServerSetup<DefaultCipherSuite>>>,
                      mut stream: TcpStream,
-                     mut registered_lockers: &Arc<Mutex<HashMap<String, Locker>>>
+                     registered_lockers: &Arc<Mutex<HashMap<String, Locker>>>
     ){
     let mut type_buffer: [u8; 1] = [0];
-    let mut length_buffer: [u8; 4] = [0,0,0,0];
     let mut rng = OsRng;
     loop {
-    stream.read_exact(&mut type_buffer);
+    stream.read_exact(&mut type_buffer).unwrap();
     if type_buffer[0] == 0 {
-        let mut start_time = Instant::now();
+        let start_time = Instant::now();
 
-
-        stream.read_exact(&mut length_buffer);
-        let mut length: usize = 0;
-
-        for byte in length_buffer {
-            length = (length << 8) | byte as usize;
-        }
-        //println!("{}", length);
-        let mut registration_request_buffer = vec![0;length];
-        stream.read_exact(&mut registration_request_buffer);
-        stream.read_exact(&mut length_buffer);
-        length = 0;
-        for byte in length_buffer {
-            length = (length << 8) | byte as usize;
-        }
-        let mut username_buffer = vec![0;length];
-        stream.read_exact(&mut username_buffer);
+        let registration_request_buffer = read_from_stream(&stream);
+        let username_buffer = read_from_stream(&stream);
         //println!("Registration Request Bytes: {:?}", registration_request_buffer);
         //println!("Username Bytes: {:?}", username_buffer);
         let server_registration_start_result = ServerRegistration::<DefaultCipherSuite>::start(
@@ -116,40 +118,15 @@ fn handle_connection(server_setup: &Arc<Mutex<ServerSetup<DefaultCipherSuite>>>,
         ).unwrap();
 
         //Prepare sending registration response
-        let registration_response_bytes = server_registration_start_result.message.serialize();
+        let registration_response_bytes = server_registration_start_result.message.serialize().to_vec();
+        write_to_stream(&stream, &registration_response_bytes);
         //println!("Registration Response Bytes: {:?}", registration_response_bytes);
-        length = registration_response_bytes.len();
-        //println!("Registration Response Length: {}", length);
-        let mut length_vector : Vec<u8> = Vec::with_capacity(4);
-        for i in (0..4).rev() {
-            // Extract individual bytes using bitwise operations
-            let byte = ((length >> (i * 8)) & 0xFF) as u8;
-            length_vector.push(byte);
-        }
-        //println!("Registration Response Length Bytes: {:?}", length_vector);
-        length_vector.extend(registration_response_bytes);
-        stream.write_all(&length_vector); 
-        stream.flush();
         // In a real setting, a signature over the registration response bytes and a Challenge will also be sent. Omitted for simplicity
 
-        stream.read_exact(&mut length_buffer);
-        //println!("Length Buffer: {:?}", length_buffer);
-        length = 0;
-        for byte in length_buffer {
-            length = (length << 8) | byte as usize;
-        }
-        //println!("Ciphertext Buffer Length: {}", length);
-        let mut ciphertext_buffer = vec![0;length];
-        stream.read_exact(&mut ciphertext_buffer);
+
+        let ciphertext_buffer = read_from_stream(&stream);
+        let registration_result_buffer = read_from_stream(&stream);
         //println!("CipherText: {:?}", ciphertext_buffer);
-        stream.read_exact(&mut length_buffer);
-        length = 0;
-        for byte in length_buffer {
-            length = (length << 8) | byte as usize;
-        }
-        //println!("Registration Result Buffer Length: {}", length);
-        let mut registration_result_buffer = vec![0;length];
-        stream.read_exact(&mut registration_result_buffer);
         //println!("Registration Result Buffer: {:?}", registration_result_buffer);
         let password_file = ServerRegistration::finish(
             RegistrationUpload::<DefaultCipherSuite>::deserialize(&registration_result_buffer).unwrap(),
@@ -163,32 +140,17 @@ fn handle_connection(server_setup: &Arc<Mutex<ServerSetup<DefaultCipherSuite>>>,
         let mut m = registered_lockers.lock().unwrap();
         m.insert(String::from_utf8(username_buffer).unwrap(), l);
 
-        let mut end_time = Instant::now();
-        let mut elapsed = end_time.duration_since(start_time);
+        let end_time = Instant::now();
+        let elapsed = end_time.duration_since(start_time);
         println!("Register Takes: {:?}", elapsed);
-
-        println!("Registration Complete")
     }else if type_buffer[0] == 1{
-        let mut start_time = Instant::now();
-        stream.read_exact(&mut length_buffer);
-        let mut length: usize = 0;
-
-        for byte in length_buffer {
-            length = (length << 8) | byte as usize;
-        }
+        let start_time = Instant::now();
         //println!("{}", length);
-        let mut credential_request_buffer = vec![0;length];
-        stream.read_exact(&mut credential_request_buffer);
-        stream.read_exact(&mut length_buffer);
-        length = 0;
-        for byte in length_buffer {
-            length = (length << 8) | byte as usize;
-        }
-        let mut username_buffer = vec![0;length];
-        stream.read_exact(&mut username_buffer);
+        let credential_request_buffer = read_from_stream(&stream);
+        let username_buffer = read_from_stream(&stream);
         //println!("Login Request Bytes: {:?}", credential_request_buffer);
         //println!("Username Bytes: {:?}", username_buffer);        
-        let mut m = registered_lockers.lock().unwrap();
+        let m = registered_lockers.lock().unwrap();
         let locker = m.get(&String::from_utf8(username_buffer.clone()).unwrap()).unwrap();
         let password_file = ServerRegistration::<DefaultCipherSuite>::deserialize(&locker.password_file).unwrap();
         //println!("{:?}", &locker.password_file);
@@ -201,50 +163,27 @@ fn handle_connection(server_setup: &Arc<Mutex<ServerSetup<DefaultCipherSuite>>>,
             ServerLoginStartParameters::default(),
         )
         .unwrap();
-        let credential_response_bytes = server_login_start_result.message.serialize();
-        //println!("Credential Response Bytes: {:?}", credential_response_bytes);
-        length = credential_response_bytes.len();
-        //println!("Credential Response Length: {}", length);
-        let mut length_vector : Vec<u8> = Vec::with_capacity(4);
-        for i in (0..4).rev() {
-            // Extract individual bytes using bitwise operations
-            let byte = ((length >> (i * 8)) & 0xFF) as u8;
-            length_vector.push(byte);
-        }
-        //println!("Credential Response Length Bytes: {:?}", length_vector);
-        length_vector.extend(credential_response_bytes);
-        stream.write_all(&length_vector); 
-        stream.flush();
 
-        //Read Credential Finalization
-        stream.read_exact(&mut length_buffer);
-        //println!("Length Buffer: {:?}", length_buffer);
-        length = 0;
-        for byte in length_buffer {
-            length = (length << 8) | byte as usize;
-        }
-        let mut credential_finalization_buffer = vec![0;length];
-        stream.read_exact(&mut credential_finalization_buffer);
+        //Send CredentialResponse to client
+        let credential_response_bytes = server_login_start_result.message.serialize().to_vec();
+        write_to_stream(&stream, &credential_response_bytes);
+        //println!("Credential Response Bytes: {:?}", credential_response_bytes);
+
+        //Read CredentialFinalization
+        let credential_finalization_bytes = read_from_stream(&stream);
+
         let server_login_finish_result = server_login_start_result
         .state
-        .finish(CredentialFinalization::deserialize(&credential_finalization_buffer).unwrap())
-        .unwrap();
+        .finish(CredentialFinalization::deserialize(&credential_finalization_bytes).unwrap()).unwrap();
+        
+
+        //Send content of locker, encrypted with the session key of this login attempt
         let encrypted_locker_contents =
         encrypt(&server_login_finish_result.session_key, &locker.contents);
-        //println!("Encrypted Locker Contents: {:?}", encrypted_locker_contents);
-        let mut length_vector2 : Vec<u8> = Vec::with_capacity(4);
-        length = encrypted_locker_contents.len();
-        for i in (0..4).rev() {
-            // Extract individual bytes using bitwise operations
-            let byte = ((length >> (i * 8)) & 0xFF) as u8;
-            length_vector2.push(byte);
-        }
-        length_vector2.extend(encrypted_locker_contents);
-        stream.write_all(&length_vector2);
-        // let mut end_time = Instant::now();
-        // let mut elapsed = end_time.duration_since(start_time);
-        // println!("Login Takes: {:?}", elapsed);
-        println!("Login Completed");
+        write_to_stream(&stream, &encrypted_locker_contents);
+        let end_time = Instant::now();
+        let elapsed = end_time.duration_since(start_time);
+        println!("Login Takes: {:?}", elapsed);
     }else {
         break;
     }
